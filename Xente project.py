@@ -405,119 +405,91 @@ if 'CustomerId' in train.columns and 'ProductId' in train.columns:
 else:
     st.write("CustomerId or ProductId column not found in the dataset.")
     print("CustomerId or ProductId column not found in the dataset.")
-# Transformation and Encoding using the columns in the train dataset
-
+#%%
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import pickle
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.metrics import classification_report, roc_auc_score
 
-# 1. Label Encoding for categorical columns
+# Define the path to the train dataset
+train_path = r"C:\Users\user\OneDrive\Desktop\DS\Project\Train.csv"
+train = pd.read_csv(train_path)
+
+# Variables to eliminate
+eliminate_vars = [
+    'CustomerId', 'TransactionStartTime', 'Value', 'TransactionId', 'CurrencyCode', 'CountryCode',
+    'ProviderId', 'ProductId', 'ProductCategory', 'ChannelId', 'TransactionStatus', 'IssuedDateLoan',
+    'AmountLoan', 'Currency', 'LoanId', 'PaidOnDate', 'IsFinalPayBack', 'LoanApplicationId', 'PayBackId'
+]
+
+# Remove unwanted columns
+train = train.drop(columns=[col for col in eliminate_vars if col in train.columns])
+
+# Data Cleaning
+train = train.drop_duplicates()
+num_cols = train.select_dtypes(include=['int64', 'float64']).columns
+for col in num_cols:
+    train[col] = train[col].fillna(train[col].median())
 cat_cols = train.select_dtypes(include=['object']).columns
+for col in cat_cols:
+    train[col] = train[col].fillna(train[col].mode()[0])
+missing_thresh = 0.5
+train = train.loc[:, train.isnull().mean() < missing_thresh]
+
+# Label Encoding for categorical columns
 label_encoders = {}
 for col in cat_cols:
     le = LabelEncoder()
     train[col] = le.fit_transform(train[col])
     label_encoders[col] = le
-st.write("Label encoding applied to categorical columns.")
-print("Label encoding applied to categorical columns.")
 
-# 2. Standard Scaling for numeric columns (excluding target and already encoded columns)
+# Standard Scaling for numeric columns (excluding target and already encoded columns)
 exclude_cols = ['IsDefaulted', 'Good_Bad_flag']
 num_cols = [col for col in train.select_dtypes(include=['int64', 'float64']).columns if col not in exclude_cols]
-
 scaler = StandardScaler()
 train[num_cols] = scaler.fit_transform(train[num_cols])
-st.write("Standard scaling applied to numeric columns.")
-print("Standard scaling applied to numeric columns.")
 
-# 3. Display transformed data
-st.write("Transformed and encoded train dataset preview:")
-st.write(train.head())
-print("Transformed and encoded train dataset preview:")
-print(train.head())
-# Feature Selection using model-based importance (Random Forest)
-
-from sklearn.ensemble import RandomForestClassifier
-
-# Define features and target
+# Feature Selection
 target_col = 'IsDefaulted'
 feature_cols = [col for col in train.columns if col != target_col and train[col].dtype in [int, float]]
-
-# Remove rows with missing values in features or target
 train_fs = train.dropna(subset=feature_cols + [target_col])
-
 X = train_fs[feature_cols]
 y = train_fs[target_col]
 
-# Fit Random Forest for feature importance
+# Feature Importance (Random Forest)
 rf = RandomForestClassifier(n_estimators=100, random_state=42)
 rf.fit(X, y)
-
-# Get feature importances
 importances = rf.feature_importances_
 feature_importance_df = pd.DataFrame({'Feature': feature_cols, 'Importance': importances})
 feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
 
-# Display top features
-st.write("Top Features by Model-Based Importance:")
-st.write(feature_importance_df.head(10))
-print("Top Features by Model-Based Importance:")
-print(feature_importance_df.head(10))
-
-# Optional: Plot feature importances
-fig, ax = plt.subplots(figsize=(10, 6))
-sns.barplot(x='Importance', y='Feature', data=feature_importance_df.head(10), ax=ax)
-ax.set_title('Top 10 Feature Importances')
-from sklearn.model_selection import train_test_split
-
 # Split train dataset: 70% training, 15% validation, 15% testing
-
-# First, split off 30% for temp (validation + test)
 train_set, temp_set = train_test_split(
     train, test_size=0.3, random_state=42, stratify=train['IsDefaulted'] if 'IsDefaulted' in train.columns else None
 )
-
-# Then split temp into 50% validation, 50% test (i.e., 15% each of original)
 val_set, test_set = train_test_split(
     temp_set, test_size=0.5, random_state=42, stratify=temp_set['IsDefaulted'] if 'IsDefaulted' in temp_set.columns else None
 )
 
-st.write(f"Training set shape: {train_set.shape}")
-st.write(f"Validation set shape: {val_set.shape}")
-st.write(f"Test set shape: {test_set.shape}")
-
-print("Training set shape:", train_set.shape)
-print("Validation set shape:", val_set.shape)
-print("Test set shape:", test_set.shape)
 # Model training using Random Forest
-
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score
-
-# Select features for modeling (exclude target and any non-numeric columns)
 features = [col for col in train_set.columns if col not in ['IsDefaulted', 'Good_Bad_flag'] and train_set[col].dtype in [int, float]]
-
 X_train = train_set[features]
 y_train = train_set['IsDefaulted']
 X_val = val_set[features]
 y_val = val_set['IsDefaulted']
 
-# Train Random Forest model
 rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
 rf_model.fit(X_train, y_train)
-
-# Predict on validation set
 y_pred = rf_model.predict(X_val)
 y_proba = rf_model.predict_proba(X_val)[:, 1]
 
-# Evaluation
-st.write("Random Forest Results (Validation Set):")
-st.write(classification_report(y_val, y_pred))
-st.write(f"ROC-AUC: {roc_auc_score(y_val, y_proba):.3f}")
-
-print("Random Forest Results (Validation Set):")
-print(classification_report(y_val, y_pred))
-from sklearn.model_selection import RandomizedSearchCV
-
-# Define parameter grid for Random Forest
+# Hyperparameter tuning with RandomizedSearchCV
 param_dist = {
     'n_estimators': [50, 100, 200],
     'max_depth': [None, 5, 10, 20],
@@ -525,108 +497,87 @@ param_dist = {
     'min_samples_leaf': [1, 2, 4],
     'bootstrap': [True, False]
 }
-
-# Initialize Random Forest
 rf = RandomForestClassifier(random_state=42)
-
-# RandomizedSearchCV setup
 random_search = RandomizedSearchCV(
     rf, param_distributions=param_dist, 
     n_iter=10, scoring='roc_auc', 
     cv=3, random_state=42, n_jobs=-1
 )
-# Drop rows with NaN or inf in X_train or y_train
-# (Removed incomplete 'mask =' assignment as it was not used)
-# Fit RandomizedSearchCV on training data
 random_search.fit(X_train, y_train)
-
-# Best estimator and evaluation on validation set
 best_rf = random_search.best_estimator_
 y_pred_best = best_rf.predict(X_val)
 y_proba_best = best_rf.predict_proba(X_val)[:, 1]
 
-st.write("Best parameters found:", random_search.best_params_)
-st.write("Best ROC-AUC score (CV):", random_search.best_score_)
-st.write("Validation Results with Best Random Forest:")
-st.write(classification_report(y_val, y_pred_best))
-st.write(f"Validation ROC-AUC: {roc_auc_score(y_val, y_proba_best):.3f}")
-
-print("Best parameters found:", random_search.best_params_)
-print("Best ROC-AUC score (CV):", random_search.best_score_)
-print("Validation Results with Best Random Forest:")
-print(classification_report(y_val, y_pred_best))
-print("Validation ROC-AUC:", roc_auc_score(y_val, y_proba_best))
 # Model evaluation using the unseen test data
-
-from sklearn.metrics import classification_report, roc_auc_score
-
-# Prepare test features (same preprocessing as train/validation)
 test_features = [col for col in test_set.columns if col in X_train.columns]
 X_test = test_set[test_features]
 y_test = test_set['IsDefaulted']
-
-# Predict and evaluate
 y_pred_test = best_rf.predict(X_test)
-print("Test Results with Best Random Forest:")
-print(classification_report(y_test, y_pred_test))
-print("Test ROC-AUC:", roc_auc_score(y_test, best_rf.predict_proba(X_test)[:, 1]))
-import lime
-import lime.lime_tabular
-import numpy as np
+y_proba_test = best_rf.predict_proba(X_test)[:, 1]
 
-# Remove columns with zero variance or only one unique value
-def remove_constant_columns(df):
-    return df.loc[:, df.nunique() > 1]
-
-X_train_lime = X_train.copy()
-X_val_lime = X_val.copy()
-
-# Remove constant columns
-X_train_lime = remove_constant_columns(X_train_lime)
-X_val_lime = X_val_lime[X_train_lime.columns]
-
-# Remove columns with NaN or Inf
-X_train_lime = X_train_lime.replace([np.inf, -np.inf], np.nan)
-X_val_lime = X_val_lime.replace([np.inf, -np.inf], np.nan)
-
-nan_cols = X_train_lime.columns[X_train_lime.isnull().any()].tolist()
-X_train_lime = X_train_lime.drop(columns=nan_cols)
-X_val_lime = X_val_lime.drop(columns=nan_cols)
-
-# Final check: remove any columns with zero std
-zero_std_cols = X_train_lime.columns[X_train_lime.std() == 0].tolist()
-X_train_lime = X_train_lime.drop(columns=zero_std_cols)
-X_val_lime = X_val_lime.drop(columns=zero_std_cols)
-
-# Ensure columns match and order is the same
-X_val_lime = X_val_lime[X_train_lime.columns]
-
-# Create LIME explainer
-explainer = lime.lime_tabular.LimeTabularExplainer(
-    training_data=np.array(X_train_lime),
-    feature_names=X_train_lime.columns,
-    class_names=['Not Defaulted', 'Defaulted'],
-    mode='classification'
-)
-
-def predict_fn(x):
-    df = pd.DataFrame(x, columns=X_train_lime.columns)
-    # Reindex to match the model's expected columns
-    df = df.reindex(columns=X_train.columns, fill_value=0)
-    return best_rf.predict_proba(df)
-
-# Explain the first instance in the validation set
-i = 0
-exp = explainer.explain_instance(
-    data_row=X_val_lime.iloc[i].values,
-    predict_fn=predict_fn
-)
-st.write("LIME explanation for first validation instance:")
 import pickle
 
-# Save the best model to a file
+# Save the best Random Forest model to a file
 with open('best_rf_model.pkl', 'wb') as f:
     pickle.dump(best_rf, f)
-
 st.write("Model serialized and saved as best_rf_model.pkl")
 print("Model serialized and saved as best_rf_model.pkl")
+
+# Streamlit App
+st.title("Xente Credit Default Prediction (Cleaned Features)")
+
+user_input = {}
+orig_train = pd.read_csv(train_path)  # Load original data once
+
+for feat in features:
+    if feat in cat_cols:
+        options = orig_train[feat].dropna().unique().tolist()
+        user_input[feat] = st.selectbox(f"{feat}", options=options)
+    elif feat in ['BatchId', 'InvestorId', 'ThirdPartyId', 'SubscriptionId']:
+        options = orig_train[feat].dropna().unique().tolist()
+        user_input[feat] = st.selectbox(f"{feat}", options=options)
+    elif feat == 'DueDate':
+        min_date = pd.to_datetime(orig_train[feat]).min()
+        max_date = pd.to_datetime(orig_train[feat]).max()
+        user_input[feat] = st.date_input(f"{feat}", value=min_date, min_value=min_date, max_value=max_date)
+    else:
+        min_val = int(orig_train[feat].min())
+        max_val = int(orig_train[feat].max())
+        mean_val = int(orig_train[feat].mean())
+        user_input[feat] = st.slider(f"{feat}", min_value=min_val, max_value=max_val, value=mean_val, step=1)
+if st.button("Predict Default"):
+    input_df = pd.DataFrame([user_input])
+    # Label encoding for categorical columns
+    for col in cat_cols:
+        if col in input_df.columns:
+            le = label_encoders[col]
+            # If value not in classes, assign -1 or most frequent class
+            input_df[col] = input_df[col].apply(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
+    # Standard scaling for numeric columns
+    input_df[num_cols] = scaler.transform(input_df[num_cols])
+    # Ensure all features used during fit are present in input_df
+    for col in features:
+        if col not in input_df.columns:
+            if col in num_cols:
+                input_df[col] = 0
+            else:
+                input_df[col] = ''
+    input_df = input_df[features]
+    pred = best_rf.predict(input_df)[0]
+    prob = best_rf.predict_proba(input_df)[0][1]
+    if pred == 1:
+        st.success(f"Prediction: Defaulted (Probability: {prob:.2f})")
+    else:
+        st.info(f"Prediction: Not Defaulted (Probability: {prob:.2f})")
+
+# Display feature importance
+st.write("Top Features by Model-Based Importance:")
+st.write(feature_importance_df.head(10))
+
+# Display model evaluation
+st.write("Random Forest Results (Validation Set):")
+st.write(classification_report(y_val, y_pred_best))
+st.write(f"Validation ROC-AUC: {roc_auc_score(y_val, y_proba_best):.3f}")
+st.write("Test Results with Best Random Forest:")
+st.write(classification_report(y_test, y_pred_test))
+st.write(f"Test ROC-AUC: {roc_auc_score(y_test, y_proba_test):.3f}")
